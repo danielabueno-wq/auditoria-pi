@@ -160,6 +160,14 @@ if not _check_password():
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _get_google_token(username: str | None) -> str | None:
+    """Lê o token Google do usuário a partir dos Secrets do Streamlit (produção)."""
+    if not username:
+        return None
+    tokens = st.secrets.get("google_tokens", {})
+    return tokens.get(username) or None
+
+
 def _save_upload(uploaded_file) -> Path:
     suffix = Path(uploaded_file.name).suffix
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -495,23 +503,16 @@ with tab_auditoria:
             try:
                 from cobranca_pis import token_existe, autenticar
                 _username = st.session_state.get("username")
-                _token_ok = token_existe(_username)
+                _token_json = _get_google_token(_username)
+                _token_ok = token_existe(_username, token_json=_token_json)
             except ImportError:
                 _token_ok = False
 
             if not _token_ok:
                 st.warning(
-                    f"Sua conta Gmail ainda não está conectada. "
-                    "Clique abaixo para autorizar — o navegador abrirá uma vez para autenticação."
+                    "Sua conta Gmail não está configurada nos Secrets do Streamlit. "
+                    "Peça ao administrador para adicionar seu token Google nos Secrets."
                 )
-                if st.button("🔗 Conectar meu Gmail", key="btn_conectar_gmail"):
-                    with st.spinner("Abrindo autenticação Google no navegador…"):
-                        try:
-                            autenticar(username=_username)
-                            st.success("✅ Gmail conectado! Agora você pode registrar auditorias.")
-                            st.rerun()
-                        except Exception as _exc:
-                            st.error(f"Erro na autenticação: {_exc}")
             else:
                 _pareceres = [
                     p.get("auditoria", {}).get("parecer_conclusivo", "")
@@ -542,7 +543,7 @@ with tab_auditoria:
                     with st.spinner("Registrando na planilha e criando rascunhos de correção…"):
                         try:
                             from src.acompanhamento import registrar_e_solicitar_correcoes
-                            _ar = registrar_e_solicitar_correcoes(_result, username=_username)
+                            _ar = registrar_e_solicitar_correcoes(_result, username=_username, token_json=_token_json)
                             st.session_state["acomp_resultado"] = _ar
                         except Exception as _exc:
                             st.error(f"Erro ao registrar: {_exc}")
@@ -621,21 +622,14 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
 
     # ── Verificar token do usuário logado ────────────────────────────────────
     _cob_username = st.session_state.get("username")
-    _cob_token_ok = _cob.token_existe(_cob_username)
+    _cob_token_json = _get_google_token(_cob_username)
+    _cob_token_ok = _cob.token_existe(_cob_username, token_json=_cob_token_json)
 
     if not _cob_token_ok:
         st.warning(
-            f"Sua conta Gmail ainda não está conectada. "
-            "Os rascunhos de cobrança serão criados no seu Gmail após a conexão."
+            "Sua conta Gmail não está configurada nos Secrets do Streamlit. "
+            "Peça ao administrador para adicionar seu token Google nos Secrets."
         )
-        if st.button("🔗 Conectar meu Gmail", key="btn_conectar_gmail_cob"):
-            with st.spinner("Abrindo autenticação Google no navegador…"):
-                try:
-                    _cob.autenticar(username=_cob_username)
-                    st.success("✅ Gmail conectado!")
-                    st.rerun()
-                except Exception as _e:
-                    st.error(f"Erro na autenticação: {_e}")
         st.divider()
 
     # ── Cobranças ─────────────────────────────────────────────────────────────
@@ -657,7 +651,7 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
         with st.spinner("Consultando planilha..."):
             try:
                 st.session_state["pendentes_cache"] = _cob.listar_pendentes_para_streamlit(
-                    username=_cob_username
+                    username=_cob_username, token_json=_cob_token_json
                 )
             except Exception as _e:
                 st.error(f"Erro ao ler planilha: {_e}")
@@ -731,7 +725,7 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
     if _cobrar_btn and _pi_input:
         with st.spinner(f"Criando rascunho para PI {_pi_input}..."):
             try:
-                _res = _cob.cobrar_pi_especifico(_pi_input, username=_cob_username)
+                _res = _cob.cobrar_pi_especifico(_pi_input, username=_cob_username, token_json=_cob_token_json)
                 if _res["cobrados"]:
                     st.success(f"✅ Rascunho criado no seu Gmail para o PI **{_pi_input}**! Confira em Rascunhos antes de enviar.")
                 elif _res["pulados"]:
@@ -760,7 +754,7 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
         if st.button(_label, type="secondary" if _dry_run else "primary", use_container_width=True):
             with st.spinner("Processando..."):
                 try:
-                    _resultado = _cob.executar_cobranca(dry_run=_dry_run, force=_force, username=_cob_username)
+                    _resultado = _cob.executar_cobranca(dry_run=_dry_run, force=_force, username=_cob_username, token_json=_cob_token_json)
                     _r1, _r2, _r3, _r4 = st.columns(4)
                     _r1.metric("Rascunhos criados", len(_resultado["cobrados"]))
                     _r2.metric("Já cobrados (pulados)", len(_resultado["pulados"]))
@@ -793,7 +787,7 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
     if st.button("🔎 Ver histórico recente"):
         with st.spinner("Carregando histórico..."):
             try:
-                _sheets, _ = _cob.autenticar(username=_cob_username)
+                _sheets, _ = _cob.autenticar(username=_cob_username, token_json=_cob_token_json)
                 _rows = _cob.ler_aba(_sheets, f"'{_cob.ABA_HISTORICO}'")
                 if len(_rows) > 1:
                     import pandas as _pd2

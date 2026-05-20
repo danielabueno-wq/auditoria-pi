@@ -115,48 +115,62 @@ DOCS_PADRAO = [
 # ══════════════════════════════════════════════════════════════════════════════
 #  AUTENTICAÇÃO
 # ══════════════════════════════════════════════════════════════════════════════
-def autenticar(username: str | None = None):
+def autenticar(username: str | None = None, token_json: str | None = None):
     """
     Retorna (sheets_service, gmail_service) com OAuth2.
 
-    Se `username` for informado, usa token_<username>.json — permitindo que
-    cada usuário da plataforma autentique sua própria conta Google/Gmail.
-    Caso contrário, usa o token.json padrão (comportamento original).
+    Prioridade:
+    1. token_json (string JSON passada pelo Streamlit Secrets) — para uso na nuvem
+    2. token_<username>.json no disco — para uso local/desenvolvimento
+    3. token.json padrão — comportamento original sem username
     """
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
 
-    token_filename = f"token_{username}.json" if username else "token.json"
     creds = None
-    token_path = Path(__file__).parent / token_filename
-    creds_path = Path(__file__).parent / "credentials.json"
 
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-
-    if not creds or not creds.valid:
+    # 1. Token vindo dos Secrets do Streamlit (produção na nuvem)
+    if token_json:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(token_json), SCOPES
+        )
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        else:
-            if not creds_path.exists():
-                raise FileNotFoundError(
-                    "credentials.json não encontrado.\n"
-                    "Baixe em: console.cloud.google.com → Credenciais → OAuth2 Desktop"
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
+
+    # 2. Token em arquivo local (desenvolvimento)
+    if not creds or not creds.valid:
+        token_filename = f"token_{username}.json" if username else "token.json"
+        token_path = Path(__file__).parent / token_filename
+        creds_path = Path(__file__).parent / "credentials.json"
+
+        if token_path.exists():
+            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not creds_path.exists():
+                    raise FileNotFoundError(
+                        "credentials.json não encontrado.\n"
+                        "Baixe em: console.cloud.google.com → Credenciais → OAuth2 Desktop"
+                    )
+                flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+                creds = flow.run_local_server(port=0)
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
 
     sheets = build("sheets", "v4", credentials=creds)
     gmail  = build("gmail",  "v1",  credentials=creds)
     return sheets, gmail
 
 
-def token_existe(username: str | None = None) -> bool:
-    """Verifica se o token OAuth do usuário já foi gerado."""
+def token_existe(username: str | None = None, token_json: str | None = None) -> bool:
+    """Verifica se o token OAuth do usuário está disponível (secrets ou arquivo local)."""
+    if token_json:
+        return True
     filename = f"token_{username}.json" if username else "token.json"
     return (Path(__file__).parent / filename).exists()
 
@@ -456,6 +470,7 @@ def executar_cobranca(
     pi_filtro: str | None = None,
     hoje: datetime.date | None = None,
     username: str | None = None,
+    token_json: str | None = None,
 ) -> dict:
     """
     Executa o fluxo completo de cobrança.
@@ -484,7 +499,7 @@ def executar_cobranca(
 
     # 1. Autenticar
     print("🔑 Autenticando no Google...")
-    sheets, gmail = autenticar(username=username)
+    sheets, gmail = autenticar(username=username, token_json=token_json)
     print("   ✅ Autenticado.\n")
 
     # 2. Ler planilha
@@ -573,22 +588,22 @@ def executar_cobranca(
 # ══════════════════════════════════════════════════════════════════════════════
 #  INTEGRAÇÃO STREAMLIT — funções auxiliares
 # ══════════════════════════════════════════════════════════════════════════════
-def listar_pendentes_para_streamlit(username: str | None = None) -> list[dict]:
+def listar_pendentes_para_streamlit(username: str | None = None, token_json: str | None = None) -> list[dict]:
     """
     Retorna lista de PIs pendentes sem criar rascunhos.
     Use no Streamlit para exibir a tabela de pendentes antes de disparar.
     """
-    sheets, _ = autenticar(username=username)
+    sheets, _ = autenticar(username=username, token_json=token_json)
     rows_pis = ler_aba(sheets, f"'{ABA_PIS}'")
     return identificar_pendentes(rows_pis, datetime.date.today())
 
 
-def cobrar_pi_especifico(num_pi: str, username: str | None = None) -> dict:
+def cobrar_pi_especifico(num_pi: str, username: str | None = None, token_json: str | None = None) -> dict:
     """
     Cobra um PI específico pelo número exato.
     Use no Streamlit para cobrar individualmente pelo botão.
     """
-    return executar_cobranca(pi_filtro=num_pi, force=True, username=username)
+    return executar_cobranca(pi_filtro=num_pi, force=True, username=username, token_json=token_json)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

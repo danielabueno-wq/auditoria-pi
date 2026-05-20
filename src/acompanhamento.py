@@ -193,7 +193,7 @@ def _criar_rascunho(gmail, email_dict: dict) -> str:
     return draft["id"]
 
 
-def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None) -> dict:
+def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None, token_json: str | None = None) -> dict:
     """
     Registra todos os processos na aba de acompanhamento do Sheets.
     Para pareceres não conformes, cria rascunhos de e-mail de correção no Gmail.
@@ -211,7 +211,7 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
     """
     from cobranca_pis import autenticar, carregar_contatos, ler_aba, ABA_CONTATOS
 
-    sheets, gmail = autenticar(username=username)
+    sheets, gmail = autenticar(username=username, token_json=token_json)
     garantir_aba_acompanhamento(sheets)
 
     rows_contatos = ler_aba(sheets, f"'{ABA_CONTATOS}'")
