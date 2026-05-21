@@ -82,12 +82,13 @@ C_DT_COB   = 21  # V  DT COBRANÇA
 C_RESP     = 23  # X  RESPONSÁVEL
 
 # ─── Mapeamento de colunas — aba "Contatos dos Veículos" (0-indexado) ─────────
-CV_NOME    = 0   # Nome do Veículo (exato do sistema)
-CV_TIPO    = 1   # Tipo: radio / jornal / digital
-CV_EMAIL   = 4   # E-mail Principal (Cobrança)
-CV_CC      = 5   # E-mails em Cópia
-CV_CONTATO = 6   # Pessoa de Contato
-CV_TEL     = 7   # Telefone
+CV_NOME    = 0   # A  Nome do Veículo (exato do sistema)
+CV_CNPJ    = 1   # B  CNPJ do Veículo (ex: 11.692.592/0001-76)
+CV_TIPO    = 2   # C  Tipo: radio / jornal / digital
+CV_EMAIL   = 5   # F  E-mail Principal (Cobrança)
+CV_CC      = 6   # G  E-mails em Cópia
+CV_CONTATO = 7   # H  Pessoa de Contato
+CV_TEL     = 8   # I  Telefone
 
 # ─── Documentos cobrados por tipo de veículo ──────────────────────────────────
 DOCS_POR_TIPO = {
@@ -278,8 +279,17 @@ def identificar_pendentes(
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONTATOS DOS VEÍCULOS
 # ══════════════════════════════════════════════════════════════════════════════
+def _normalizar_cnpj(cnpj: str) -> str:
+    """Remove formatação do CNPJ, deixando só dígitos."""
+    return re.sub(r"\D", "", cnpj)
+
+
 def carregar_contatos(rows: list[list]) -> dict[str, dict]:
-    """Retorna dict {nome_veiculo: {email, cc, tipo, contato, tel}}."""
+    """
+    Retorna dict indexado por nome do veículo.
+    Cada entrada inclui o CNPJ normalizado para busca alternativa.
+    Use buscar_contato() para localizar pelo nome OU pelo CNPJ.
+    """
     contatos = {}
     for row in rows[1:]:  # pula cabeçalho
         nome = get_cell(row, CV_NOME)
@@ -288,14 +298,37 @@ def carregar_contatos(rows: list[list]) -> dict[str, dict]:
         email = get_cell(row, CV_EMAIL).replace("\n", "").strip()
         cc_raw = get_cell(row, CV_CC)
         cc_list = [e.strip() for e in re.split(r"[;,]", cc_raw) if e.strip() and "@" in e]
+        cnpj_raw = get_cell(row, CV_CNPJ)
         contatos[nome] = {
             "email":   email,
             "cc":      cc_list,
             "tipo":    get_cell(row, CV_TIPO).lower(),
             "contato": get_cell(row, CV_CONTATO),
             "tel":     get_cell(row, CV_TEL),
+            "cnpj":    cnpj_raw,
+            "cnpj_digits": _normalizar_cnpj(cnpj_raw),
         }
     return contatos
+
+
+def buscar_contato(contatos: dict[str, dict], nome: str, cnpj: str = "") -> dict | None:
+    """
+    Busca o contato pelo nome do veículo (exato) ou, se não encontrar,
+    pelo CNPJ (apenas dígitos). Retorna None se não achar nenhum.
+    """
+    # 1. Tentativa exata pelo nome
+    if nome in contatos:
+        return contatos[nome]
+
+    # 2. Fallback: busca pelo CNPJ normalizado
+    if cnpj:
+        cnpj_norm = _normalizar_cnpj(cnpj)
+        if cnpj_norm:
+            for dados in contatos.values():
+                if dados["cnpj_digits"] == cnpj_norm:
+                    return dados
+
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -527,8 +560,8 @@ def executar_cobranca(
         print(f"  ▶ PI {num} | {veiculo}")
         print(f"    Cliente: {pi['cliente']} | Atraso: {pi['dias_atraso']} dias")
 
-        # Verificar contato
-        contato = contatos.get(veiculo)
+        # Verificar contato (por nome ou CNPJ se disponível)
+        contato = buscar_contato(contatos, veiculo)
         if not contato or not contato.get("email"):
             print(f"    ⚠️  Sem e-mail cadastrado para este veículo. Pulando.\n")
             resultado["sem_contato"].append({"pi": num, "veiculo": veiculo})

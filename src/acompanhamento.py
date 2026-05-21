@@ -209,7 +209,7 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
         "erros":        [{"pi", "erro"}],
       }
     """
-    from cobranca_pis import autenticar, carregar_contatos, ler_aba, ABA_CONTATOS
+    from cobranca_pis import autenticar, carregar_contatos, buscar_contato, ler_aba, ABA_CONTATOS
 
     sheets, gmail = autenticar(username=username, token_json=token_json)
     garantir_aba_acompanhamento(sheets)
@@ -241,13 +241,19 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
         periodo = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
         nc_str = " | ".join(nao_conformidades)
 
+        # CNPJ extraído dos dados bancários (PI ou processo) para busca alternativa
+        cnpj_veiculo = (
+            pi_extr.get("dados_bancarios", {}).get("cnpj") or
+            extracao.get("dados_bancarios", {}).get("cnpj") or ""
+        )
+
         draft_id = ""
         email_enviado = "Não"
         data_email = ""
 
         # Cria rascunho de correção para processos com pendências
         if parecer in PARECERES_COM_EMAIL:
-            contato = contatos.get(veiculo)
+            contato = buscar_contato(contatos, veiculo, cnpj=cnpj_veiculo)
             if not contato or not contato.get("email"):
                 sem_contato.append({"pi": num_pi, "veiculo": veiculo})
             else:
