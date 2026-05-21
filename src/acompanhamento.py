@@ -108,10 +108,10 @@ def montar_email_correcao(pi_data: dict, processo: dict, contato: dict) -> dict:
 
     pi_extr = pi_data.get("extracao", {})
     num_pi = pi_extr.get("numero_pi") or pi_data.get("nome", "")
-    cliente = extracao.get("cliente") or pi_extr.get("cliente") or ""
-    campanha = extracao.get("campanha") or pi_extr.get("campanha") or ""
-    veiculo = extracao.get("veiculo") or pi_extr.get("veiculo") or contato.get("nome", "")
-    periodo = _periodo_str(extracao.get("periodo") or pi_extr.get("periodo"))
+    cliente = pi_extr.get("cliente") or extracao.get("cliente") or ""
+    campanha = pi_extr.get("campanha") or extracao.get("campanha") or ""
+    veiculo = pi_extr.get("veiculo") or extracao.get("veiculo") or contato.get("nome", "")
+    periodo = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
 
     nome_contato = contato.get("contato") or contato.get("email", "").split("@")[0]
 
@@ -233,10 +233,12 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
         parecer = auditoria.get("parecer_conclusivo", "Não determinado")
         nao_conformidades = _extrair_nao_conformidades(auditoria)
 
-        veiculo = extracao.get("veiculo") or pi_extr.get("veiculo") or ""
-        cliente = extracao.get("cliente") or pi_extr.get("cliente") or ""
-        campanha = extracao.get("campanha") or pi_extr.get("campanha") or ""
-        periodo = _periodo_str(extracao.get("periodo") or pi_extr.get("periodo"))
+        # Usa sempre o nome do PI como referência canônica do veículo,
+        # pois todos os processos de uma auditoria pertencem ao mesmo veículo.
+        veiculo = pi_extr.get("veiculo") or extracao.get("veiculo") or ""
+        cliente = pi_extr.get("cliente") or extracao.get("cliente") or ""
+        campanha = pi_extr.get("campanha") or extracao.get("campanha") or ""
+        periodo = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
         nc_str = " | ".join(nao_conformidades)
 
         draft_id = ""
