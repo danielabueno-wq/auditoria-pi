@@ -493,7 +493,9 @@ with tab_auditoria:
         st.divider()
         st.subheader("📋 Registrar e Acompanhar")
 
-        _creds_acomp = (Path(__file__).parent / "credentials.json").exists()
+        _username = st.session_state.get("username")
+        _token_json = _get_google_token(_username)
+        _creds_acomp = (Path(__file__).parent / "credentials.json").exists() or bool(_token_json)
         if not _creds_acomp:
             st.info(
                 "Configure o `credentials.json` para registrar na planilha "
@@ -502,8 +504,6 @@ with tab_auditoria:
         else:
             try:
                 from cobranca_pis import token_existe, autenticar
-                _username = st.session_state.get("username")
-                _token_json = _get_google_token(_username)
                 _token_ok = token_existe(_username, token_json=_token_json)
             except ImportError:
                 _token_ok = False
