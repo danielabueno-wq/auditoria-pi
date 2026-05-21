@@ -99,23 +99,33 @@ def _periodo_str(periodo: Any) -> str:
     return periodo.get("descricao") or ""
 
 
-def montar_email_correcao(pi_data: dict, processo: dict, contato: dict) -> dict:
-    auditoria = processo.get("auditoria", {})
-    extracao = processo.get("extracao", {})
-    parecer = auditoria.get("parecer_conclusivo", "")
-    nao_conformidades = _extrair_nao_conformidades(auditoria)
-    recomendacoes = auditoria.get("recomendacoes", [])
+def montar_email_correcao_agrupado(
+    pi_data: dict,
+    processos_com_nc: list[dict],
+    contato: dict,
+) -> dict:
+    """
+    Monta UM único e-mail de correção agrupando as pendências de todos os processos
+    com não-conformidades.
 
+    processos_com_nc: lista de dicts com keys:
+        - nome            (str)  nome do arquivo/processo
+        - parecer         (str)
+        - nao_conformidades (list[str])
+        - recomendacoes   (list[str])
+    """
     pi_extr = pi_data.get("extracao", {})
     num_pi = pi_extr.get("numero_pi") or pi_data.get("nome", "")
-    cliente = pi_extr.get("cliente") or extracao.get("cliente") or ""
-    campanha = pi_extr.get("campanha") or extracao.get("campanha") or ""
-    veiculo = pi_extr.get("veiculo") or extracao.get("veiculo") or contato.get("nome", "")
-    periodo = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
+    cliente = pi_extr.get("cliente") or ""
+    campanha = pi_extr.get("campanha") or ""
+    veiculo = pi_extr.get("veiculo") or contato.get("nome", "")
+    periodo = _periodo_str(pi_extr.get("periodo"))
 
     nome_contato = contato.get("contato") or contato.get("email", "").split("@")[0]
 
-    if parecer == "Reprovado":
+    # Urgência pelo parecer mais grave entre todos os processos
+    pareceres = [p["parecer"] for p in processos_com_nc]
+    if "Reprovado" in pareceres:
         urgencia = "⚠️ [PENDÊNCIA] "
         intro = (
             "A auditoria deste processo resultou em REPROVADO. "
@@ -130,15 +140,36 @@ def montar_email_correcao(pi_data: dict, processo: dict, contato: dict) -> dict:
 
     assunto = f"{urgencia}PI {num_pi} — {veiculo} — {cliente} — Solicitação de Correção"
 
-    nc_str = (
-        "\n".join(f"  • {nc}" for nc in nao_conformidades)
-        if nao_conformidades
-        else "  • Consulte o relatório de auditoria para detalhes."
-    )
+    # Pendências agrupadas por processo
+    multiplos = len(processos_com_nc) > 1
+    secoes: list[str] = []
+    todas_recomendacoes: list[str] = []
 
+    for item in processos_com_nc:
+        ncs = item.get("nao_conformidades", [])
+        recs = item.get("recomendacoes", [])
+        todas_recomendacoes.extend(recs)
+
+        if multiplos:
+            cabecalho_proc = f"  [ {item.get('nome') or 'Processo'} ]\n"
+        else:
+            cabecalho_proc = ""
+
+        if ncs:
+            linhas = "\n".join(f"  • {nc}" for nc in ncs)
+        else:
+            linhas = "  • Consulte o relatório de auditoria para detalhes."
+
+        secoes.append(cabecalho_proc + linhas)
+
+    nc_str = "\n\n".join(secoes)
+
+    # Recomendações — deduplica mantendo ordem
+    seen: set[str] = set()
+    recs_unicas = [r for r in todas_recomendacoes if not (r in seen or seen.add(r))]
     rec_str = ""
-    if recomendacoes:
-        rec_str = "\nRECOMENDAÇÕES:\n\n" + "\n".join(f"  • {r}" for r in recomendacoes) + "\n"
+    if recs_unicas:
+        rec_str = "\nRECOMENDAÇÕES:\n\n" + "\n".join(f"  • {r}" for r in recs_unicas) + "\n"
 
     corpo = f"""\
 Prezado(a) {nome_contato},
@@ -195,11 +226,9 @@ def _criar_rascunho(gmail, email_dict: dict) -> str:
 
 def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None, token_json: str | None = None) -> dict:
     """
-    Registra todos os processos na aba de acompanhamento do Sheets.
-    Para pareceres não conformes, cria rascunhos de e-mail de correção no Gmail.
-
-    Se `username` for informado, usa o token OAuth desse usuário — os rascunhos
-    aparecem na conta Gmail do próprio usuário logado na plataforma.
+    Registra todos os processos na aba de acompanhamento do Sheets (uma linha por processo).
+    Cria UM ÚNICO rascunho de e-mail por PI, agrupando as pendências de todos os processos
+    com não-conformidades.
 
     Retorna:
       {
@@ -227,56 +256,91 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
     erros: list[dict] = []
     hoje = datetime.date.today().strftime("%d/%m/%Y")
 
+    # CNPJ do veículo (extraído do PI; usado como fallback na busca de contato)
+    cnpj_veiculo = pi_extr.get("dados_bancarios", {}).get("cnpj") or ""
+
+    # ── Passo 1: coletar dados de cada processo ────────────────────────────────
+    processos_dados: list[dict] = []   # todos os processos para registro no Sheets
+    processos_com_nc: list[dict] = []  # apenas os que precisam de e-mail
+
     for proc in resultado.get("processos", []):
         auditoria = proc.get("auditoria", {})
-        extracao = proc.get("extracao", {})
-        parecer = auditoria.get("parecer_conclusivo", "Não determinado")
+        extracao  = proc.get("extracao", {})
+        parecer   = auditoria.get("parecer_conclusivo", "Não determinado")
         nao_conformidades = _extrair_nao_conformidades(auditoria)
+        recomendacoes     = auditoria.get("recomendacoes", [])
 
-        # Usa sempre o nome do PI como referência canônica do veículo,
-        # pois todos os processos de uma auditoria pertencem ao mesmo veículo.
-        veiculo = pi_extr.get("veiculo") or extracao.get("veiculo") or ""
-        cliente = pi_extr.get("cliente") or extracao.get("cliente") or ""
+        # Nome canônico do veículo sempre vem do PI
+        veiculo  = pi_extr.get("veiculo")  or extracao.get("veiculo")  or ""
+        cliente  = pi_extr.get("cliente")  or extracao.get("cliente")  or ""
         campanha = pi_extr.get("campanha") or extracao.get("campanha") or ""
-        periodo = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
-        nc_str = " | ".join(nao_conformidades)
+        periodo  = _periodo_str(pi_extr.get("periodo") or extracao.get("periodo"))
 
-        # CNPJ extraído dos dados bancários (PI ou processo) para busca alternativa
-        cnpj_veiculo = (
-            pi_extr.get("dados_bancarios", {}).get("cnpj") or
-            extracao.get("dados_bancarios", {}).get("cnpj") or ""
-        )
+        # CNPJ fallback a partir do processo se não veio do PI
+        if not cnpj_veiculo:
+            cnpj_veiculo = extracao.get("dados_bancarios", {}).get("cnpj") or ""
 
-        draft_id = ""
-        email_enviado = "Não"
-        data_email = ""
+        processos_dados.append({
+            "proc":    proc,
+            "parecer": parecer,
+            "veiculo": veiculo,
+            "cliente": cliente,
+            "campanha": campanha,
+            "periodo": periodo,
+            "nc_str":  " | ".join(nao_conformidades),
+        })
 
-        # Cria rascunho de correção para processos com pendências
         if parecer in PARECERES_COM_EMAIL:
-            contato = buscar_contato(contatos, veiculo, cnpj=cnpj_veiculo)
-            if not contato or not contato.get("email"):
-                sem_contato.append({"pi": num_pi, "veiculo": veiculo})
-            else:
-                email_dict = montar_email_correcao(pi_data, proc, {**contato, "nome": veiculo})
-                try:
-                    draft_id = _criar_rascunho(gmail, email_dict)
-                    email_enviado = "Rascunho criado"
-                    data_email = hoje
-                    rascunhos.append({
-                        "pi": num_pi,
-                        "veiculo": veiculo,
-                        "parecer": parecer,
-                        "draft_id": draft_id,
-                        "to": email_dict["to"],
-                    })
-                except Exception as e:
-                    erros.append({"pi": num_pi, "erro": f"Gmail: {e}"})
+            processos_com_nc.append({
+                "nome":               proc.get("nome", ""),
+                "parecer":            parecer,
+                "nao_conformidades":  nao_conformidades,
+                "recomendacoes":      recomendacoes,
+            })
 
+    # ── Passo 2: criar UM único rascunho de e-mail para o PI ──────────────────
+    draft_id_unico = ""
+    email_enviado_str = "Não"
+    data_email_str = ""
+
+    if processos_com_nc:
+        # Usar dados do primeiro processo com NC para encontrar o veículo
+        veiculo_ref = processos_dados[0]["veiculo"] if processos_dados else ""
+        contato = buscar_contato(contatos, veiculo_ref, cnpj=cnpj_veiculo)
+
+        if not contato or not contato.get("email"):
+            sem_contato.append({"pi": num_pi, "veiculo": veiculo_ref})
+        else:
+            email_dict = montar_email_correcao_agrupado(
+                pi_data,
+                processos_com_nc,
+                {**contato, "nome": veiculo_ref},
+            )
+            try:
+                draft_id_unico = _criar_rascunho(gmail, email_dict)
+                email_enviado_str = "Rascunho criado"
+                data_email_str = hoje
+                rascunhos.append({
+                    "pi":       num_pi,
+                    "veiculo":  veiculo_ref,
+                    "parecer":  " | ".join(p["parecer"] for p in processos_com_nc),
+                    "draft_id": draft_id_unico,
+                    "to":       email_dict["to"],
+                })
+            except Exception as e:
+                erros.append({"pi": num_pi, "erro": f"Gmail: {e}"})
+
+    # ── Passo 3: registrar cada processo no Sheets (uma linha por processo) ────
+    for pd in processos_dados:
+        # O draft_id fica na linha apenas se esse processo contribuiu para o e-mail
+        proc_tem_email = pd["parecer"] in PARECERES_COM_EMAIL
         row = [
-            hoje, num_pi, veiculo, cliente, campanha, periodo,
-            parecer, nc_str, "Pendente",
-            email_enviado, data_email, draft_id,
-            proc.get("nome", ""), "",
+            hoje, num_pi, pd["veiculo"], pd["cliente"], pd["campanha"], pd["periodo"],
+            pd["parecer"], pd["nc_str"], "Pendente",
+            email_enviado_str if proc_tem_email else "Não",
+            data_email_str if proc_tem_email else "",
+            draft_id_unico if proc_tem_email else "",
+            pd["proc"].get("nome", ""), "",
         ]
         try:
             sheets.spreadsheets().values().append(
@@ -287,16 +351,16 @@ def registrar_e_solicitar_correcoes(resultado: dict, username: str | None = None
                 body={"values": [row]},
             ).execute()
             registrados.append({
-                "pi": num_pi,
-                "processo": proc.get("nome", ""),
-                "parecer": parecer,
+                "pi":      num_pi,
+                "processo": pd["proc"].get("nome", ""),
+                "parecer":  pd["parecer"],
             })
         except Exception as e:
             erros.append({"pi": num_pi, "erro": f"Sheets: {e}"})
 
     return {
         "registrados": registrados,
-        "rascunhos": rascunhos,
+        "rascunhos":   rascunhos,
         "sem_contato": sem_contato,
-        "erros": erros,
+        "erros":       erros,
     }
