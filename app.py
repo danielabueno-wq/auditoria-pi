@@ -579,12 +579,15 @@ with tab_cobranca:
     import datetime as _dt
 
     # Verificar se cobranca_pis está disponível e configurado
-    _creds_ok = (Path(__file__).parent / "credentials.json").exists()
     try:
         import cobranca_pis as _cob
         _modulo_ok = True
     except ImportError:
         _modulo_ok = False
+
+    _cob_username  = st.session_state.get("username")
+    _cob_token_json = _get_google_token(_cob_username)
+    _creds_ok = (Path(__file__).parent / "credentials.json").exists() or bool(_cob_token_json)
 
     if not _modulo_ok or not _creds_ok:
         st.markdown("### ⚙️ Configuração necessária")
@@ -621,8 +624,7 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
         st.stop()
 
     # ── Verificar token do usuário logado ────────────────────────────────────
-    _cob_username = st.session_state.get("username")
-    _cob_token_json = _get_google_token(_cob_username)
+    # (_cob_username e _cob_token_json já definidos acima, antes do bloco if/else)
     _cob_token_ok = _cob.token_existe(_cob_username, token_json=_cob_token_json)
 
     if not _cob_token_ok:
