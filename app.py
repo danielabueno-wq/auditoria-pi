@@ -823,9 +823,10 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
                     )
                     with st.expander("Ver detalhes"):
                         for _item in _res_rec["recobrados"]:
+                            _thread_label = _item.get("thread", "")
                             st.write(
                                 f"• PI **{_item['pi']}** — {_item['veiculo']} "
-                                f"({_item['tentativa']}ª cobrança)"
+                                f"({_item['tentativa']}ª cobrança) {_thread_label}"
                             )
                 if _res_rec["pulados"]:
                     with st.expander(f"ℹ️ {len(_res_rec['pulados'])} PI(s) não precisam de recobrança"):

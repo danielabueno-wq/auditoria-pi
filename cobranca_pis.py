@@ -438,20 +438,33 @@ Em caso de dúvidas, estamos à disposição.
     }
 
 
-def criar_rascunho_gmail(gmail, email_dict: dict) -> str:
-    """Cria rascunho no Gmail e retorna o draft ID."""
+def criar_rascunho_gmail(
+    gmail,
+    email_dict: dict,
+    thread_id: str = "",
+    in_reply_to: str = "",
+) -> str:
+    """
+    Cria rascunho no Gmail e retorna o draft ID.
+    Se `thread_id` for informado, o rascunho entra na mesma conversa do e-mail original.
+    """
     msg = MIMEMultipart("alternative")
     msg["to"]      = email_dict["to"]
     msg["subject"] = email_dict["assunto"]
-    if email_dict["cc"]:
+    if email_dict.get("cc"):
         msg["cc"] = ", ".join(email_dict["cc"])
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"]  = in_reply_to
+
     msg.attach(MIMEText(email_dict["corpo"], "plain", "utf-8"))
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    draft = gmail.users().drafts().create(
-        userId="me",
-        body={"message": {"raw": raw}},
-    ).execute()
+    body: dict = {"message": {"raw": raw}}
+    if thread_id:
+        body["message"]["threadId"] = thread_id
+
+    draft = gmail.users().drafts().create(userId="me", body=body).execute()
     return draft["id"]
 
 
@@ -529,6 +542,36 @@ def dias_uteis_desde(data: datetime.date) -> int:
     return count
 
 
+def buscar_thread_cobranca(gmail, num_pi: str, email_veiculo: str) -> tuple[str, str] | None:
+    """
+    Busca o e-mail enviado anteriormente para o veículo sobre este PI.
+    Retorna (thread_id, message_id_header) para que a recobrança
+    entre na mesma conversa, ou None se não encontrar.
+    """
+    queries = [
+        f'to:{email_veiculo} "{num_pi}" in:sent',
+        f'"{num_pi}" in:sent',
+    ]
+    for q in queries:
+        try:
+            res = gmail.users().messages().list(userId="me", q=q, maxResults=5).execute()
+            msgs = res.get("messages", [])
+            if msgs:
+                msg = gmail.users().messages().get(
+                    userId="me", id=msgs[0]["id"],
+                    format="metadata",
+                    metadataHeaders=["Message-ID", "Subject"],
+                ).execute()
+                headers = {
+                    h["name"]: h["value"]
+                    for h in msg.get("payload", {}).get("headers", [])
+                }
+                return msgs[0]["threadId"], headers.get("Message-ID", "")
+        except Exception as e:
+            logging.warning(f"Erro ao buscar thread PI {num_pi}: {e}")
+    return None
+
+
 def ja_respondeu_no_gmail(gmail, num_pi: str, email_veiculo: str, dias_busca: int = 90) -> bool:
     """
     Retorna True se o veículo enviou algum e-mail para nossa conta
@@ -549,8 +592,18 @@ def ja_respondeu_no_gmail(gmail, num_pi: str, email_veiculo: str, dias_busca: in
         return False
 
 
-def montar_email_recobranca(pi: dict, contato: dict, tentativa: int, data_cobranca_original: str) -> dict:
-    """Monta e-mail de follow-up (recobrança) com tom mais urgente."""
+def montar_email_recobranca(
+    pi: dict,
+    contato: dict,
+    tentativa: int,
+    data_cobranca_original: str,
+    usar_re: bool = False,
+) -> dict:
+    """
+    Monta e-mail de follow-up (recobrança) com tom mais urgente.
+    Se `usar_re=True`, o assunto usa 'Re:' para encadear na mesma thread.
+    Caso contrário, indica '2ª COBRANÇA', '3ª COBRANÇA' etc. no assunto.
+    """
     tipo    = contato.get("tipo", "")
     docs    = DOCS_POR_TIPO.get(tipo, DOCS_PADRAO)
     docs_str = "\n".join(docs)
@@ -558,10 +611,19 @@ def montar_email_recobranca(pi: dict, contato: dict, tentativa: int, data_cobran
     vl = formatar_valor(pi["vl_liquido"]) if pi["vl_liquido"] else "conforme PI"
 
     ordinal = {2: "2ª", 3: "3ª"}.get(tentativa, f"{tentativa}ª")
-    assunto = (
-        f"⚠️ [{ordinal} COBRANÇA — SEM RETORNO] PI {pi['pi']} — "
-        f"{pi['veiculo']} — {pi['cliente']}"
-    )
+
+    if usar_re:
+        # Encadeando na thread original — assunto mantém o padrão "Re:"
+        assunto = (
+            f"Re: [COBRANÇA] PI {pi['pi']} — "
+            f"{pi['veiculo']} — {pi['cliente']}"
+        )
+    else:
+        # E-mail novo — indica claramente que é recobrança
+        assunto = (
+            f"⚠️ [{ordinal} COBRANÇA — SEM RETORNO] PI {pi['pi']} — "
+            f"{pi['veiculo']} — {pi['cliente']}"
+        )
 
     corpo = f"""\
 Prezado(a) {nome_contato},
@@ -715,23 +777,39 @@ def executar_recobranca(
             "dias_atraso": (hoje - (parse_data(info["fim_pub"]) or hoje)).days,
         }
 
-        email_dict = montar_email_recobranca(pi_dict, contato, nova_tentativa, info["data_str"])
+        # Buscar thread do e-mail original para encadear a recobrança
+        thread_info = buscar_thread_cobranca(gmail, num_pi, email_dest or contato["email"])
+        thread_id    = thread_info[0] if thread_info else ""
+        in_reply_to  = thread_info[1] if thread_info else ""
+
+        # Se encontrou a thread, usa assunto com "Re:" para manter o encadeamento
+        # Caso contrário, o assunto já indica "2ª COBRANÇA", "3ª COBRANÇA" etc.
+        email_dict = montar_email_recobranca(
+            pi_dict, contato, nova_tentativa, info["data_str"],
+            usar_re=bool(thread_id),
+        )
 
         if dry_run:
             resultado["recobrados"].append({
-                "pi": num_pi, "veiculo": veiculo,
-                "tentativa": nova_tentativa, "draft_id": "dry-run",
-                "to": email_dict["to"],
+                "pi":       num_pi,
+                "veiculo":  veiculo,
+                "tentativa": nova_tentativa,
+                "draft_id": "dry-run",
+                "to":       email_dict["to"],
+                "thread":   "✅ Encadeado" if thread_id else "📧 E-mail novo",
             })
             continue
 
         try:
-            draft_id = criar_rascunho_gmail(gmail, email_dict)
+            draft_id = criar_rascunho_gmail(gmail, email_dict, thread_id=thread_id, in_reply_to=in_reply_to)
             registrar_historico(sheets, pi_dict, email_dict, draft_id, "RECOBRANÇA_CRIADA", nova_tentativa)
             resultado["recobrados"].append({
-                "pi": num_pi, "veiculo": veiculo,
-                "tentativa": nova_tentativa, "draft_id": draft_id,
-                "to": email_dict["to"],
+                "pi":       num_pi,
+                "veiculo":  veiculo,
+                "tentativa": nova_tentativa,
+                "draft_id": draft_id,
+                "to":       email_dict["to"],
+                "thread":   "✅ Encadeado" if thread_id else "📧 E-mail novo",
             })
         except Exception as e:
             logging.error(f"Erro ao criar recobrança PI {num_pi}: {e}")
