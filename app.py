@@ -780,6 +780,64 @@ Um browser vai abrir para você autorizar o acesso. Depois, o `token.json` é sa
 
     st.divider()
 
+    # ── Recobrança automática ─────────────────────────────────────────────────
+    st.markdown("#### 🔁 Recobrança Automática")
+    st.caption(
+        "Verifica cobranças enviadas há 3+ dias úteis sem resposta do veículo "
+        "e sem NF recebida — e cria rascunhos de follow-up no Gmail."
+    )
+
+    _col_rec1, _col_rec2 = st.columns([1, 3])
+    with _col_rec1:
+        _prazo_du = st.number_input(
+            "Dias úteis sem resposta", min_value=1, max_value=30, value=3, step=1
+        )
+    with _col_rec2:
+        _dry_rec = st.checkbox("Modo simulação (não cria rascunhos)", value=True, key="dry_rec")
+
+    if st.button("🔁 Verificar e Recobrar", type="secondary" if _dry_rec else "primary", use_container_width=True):
+        with st.spinner("Verificando histórico e Gmail..."):
+            try:
+                _res_rec = _cob.executar_recobranca(
+                    dry_run=_dry_rec,
+                    dias_uteis_prazo=int(_prazo_du),
+                    username=_cob_username,
+                    token_json=_cob_token_json,
+                )
+                _rr1, _rr2, _rr3, _rr4 = st.columns(4)
+                _rr1.metric("Recobrança criada", len(_res_rec["recobrados"]))
+                _rr2.metric("Pulados", len(_res_rec["pulados"]))
+                _rr3.metric("Sem contato", len(_res_rec["sem_contato"]))
+                _rr4.metric("Erros", len(_res_rec["erros"]))
+
+                if _res_rec["recobrados"] and not _dry_rec:
+                    st.success(
+                        f"✅ {len(_res_rec['recobrados'])} rascunho(s) de recobrança criados no Gmail!"
+                    )
+                if _dry_rec and _res_rec["recobrados"]:
+                    st.info(
+                        f"🔍 Simulação: {len(_res_rec['recobrados'])} PI(s) precisariam de recobrança. "
+                        "Desmarque 'Modo simulação' para criar os rascunhos."
+                    )
+                    with st.expander("Ver detalhes"):
+                        for _item in _res_rec["recobrados"]:
+                            st.write(
+                                f"• PI **{_item['pi']}** — {_item['veiculo']} "
+                                f"({_item['tentativa']}ª cobrança)"
+                            )
+                if _res_rec["pulados"]:
+                    with st.expander(f"ℹ️ {len(_res_rec['pulados'])} PI(s) não precisam de recobrança"):
+                        for _item in _res_rec["pulados"]:
+                            st.write(f"• PI **{_item['pi']}** — {_item['motivo']}")
+                if _res_rec["erros"]:
+                    with st.expander(f"❌ {len(_res_rec['erros'])} erro(s)"):
+                        for _item in _res_rec["erros"]:
+                            st.write(f"• PI {_item['pi']}: {_item['erro']}")
+            except Exception as _e:
+                st.error(f"Erro ao processar recobrança: {_e}")
+
+    st.divider()
+
     # ── Histórico ─────────────────────────────────────────────────────────────
     st.markdown("#### 📜 Histórico de Cobranças")
     st.caption("Registrado automaticamente na aba 'Histórico de Cobranças' do Google Sheets.")

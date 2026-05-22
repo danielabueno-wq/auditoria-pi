@@ -81,6 +81,20 @@ C_DT_VEN   = 20  # U  DT VENCIMENTO
 C_DT_COB   = 21  # V  DT COBRANÇA
 C_RESP     = 23  # X  RESPONSÁVEL
 
+# ─── Mapeamento de colunas — aba "Histórico de Cobranças" (0-indexado) ────────
+CH_PI       = 0   # # PI
+CH_VEICULO  = 1   # Veículo
+CH_CLIENTE  = 2   # Cliente
+CH_CAMPANHA = 3   # Campanha
+CH_FIM_PUB  = 4   # Fim Publicação
+CH_VL_LIQ   = 5   # Valor Líq.
+CH_ATRASO   = 6   # Dias Atraso
+CH_EMAIL    = 7   # E-mail Destino
+CH_DATA_COB = 8   # Data Cobrança
+CH_STATUS   = 9   # Status
+CH_DRAFT_ID = 10  # Draft ID
+CH_TENTATIVA = 11 # Tentativa (1ª Cobrança / 2ª Cobrança / ...)
+
 # ─── Mapeamento de colunas — aba "Contatos dos Veículos" (0-indexado) ─────────
 CV_NOME    = 0   # A  Nome do Veículo (exato do sistema)
 CV_CNPJ    = 1   # B  CNPJ do Veículo (ex: 11.692.592/0001-76)
@@ -465,12 +479,14 @@ def garantir_aba_historico(sheets):
         body={"values": [[
             "# PI", "Veículo", "Cliente", "Campanha",
             "Fim Publicação", "Valor Líq.", "Dias Atraso",
-            "E-mail Destino", "Data Cobrança", "Status", "Draft ID",
+            "E-mail Destino", "Data Cobrança", "Status", "Draft ID", "Tentativa",
         ]]},
     ).execute()
 
 
-def registrar_historico(sheets, pi: dict, email_dict: dict, draft_id: str, status: str):
+def registrar_historico(
+    sheets, pi: dict, email_dict: dict, draft_id: str, status: str, tentativa: int = 1
+):
     """Appenda uma linha no Histórico de Cobranças."""
     garantir_aba_historico(sheets)
     sheets.spreadsheets().values().append(
@@ -490,8 +506,238 @@ def registrar_historico(sheets, pi: dict, email_dict: dict, draft_id: str, statu
             datetime.date.today().strftime("%d/%m/%Y"),
             status,
             draft_id,
+            f"{tentativa}ª Cobrança",
         ]]},
     ).execute()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RECOBRANÇA — follow-up automático após 3 dias úteis sem resposta
+# ══════════════════════════════════════════════════════════════════════════════
+
+def dias_uteis_desde(data: datetime.date) -> int:
+    """Conta quantos dias úteis (seg–sex) se passaram desde `data` até hoje."""
+    hoje = datetime.date.today()
+    if data >= hoje:
+        return 0
+    count = 0
+    atual = data + datetime.timedelta(days=1)
+    while atual <= hoje:
+        if atual.weekday() < 5:   # 0=seg … 4=sex
+            count += 1
+        atual += datetime.timedelta(days=1)
+    return count
+
+
+def ja_respondeu_no_gmail(gmail, num_pi: str, email_veiculo: str, dias_busca: int = 90) -> bool:
+    """
+    Retorna True se o veículo enviou algum e-mail para nossa conta
+    mencionando o número do PI nos últimos `dias_busca` dias.
+    """
+    pi_escaped = num_pi.replace("/", " ").replace("-", " ")
+    query = f'from:{email_veiculo} "{pi_escaped}" newer_than:{dias_busca}d'
+    try:
+        result = gmail.users().messages().list(userId="me", q=query, maxResults=5).execute()
+        if result.get("messages"):
+            return True
+        # Busca mais ampla só pelo número
+        query2 = f'from:{email_veiculo} "{num_pi}" newer_than:{dias_busca}d'
+        result2 = gmail.users().messages().list(userId="me", q=query2, maxResults=5).execute()
+        return bool(result2.get("messages"))
+    except Exception as e:
+        logging.warning(f"Erro ao verificar resposta Gmail PI {num_pi}: {e}")
+        return False
+
+
+def montar_email_recobranca(pi: dict, contato: dict, tentativa: int, data_cobranca_original: str) -> dict:
+    """Monta e-mail de follow-up (recobrança) com tom mais urgente."""
+    tipo    = contato.get("tipo", "")
+    docs    = DOCS_POR_TIPO.get(tipo, DOCS_PADRAO)
+    docs_str = "\n".join(docs)
+    nome_contato = contato.get("contato") or contato.get("email", "").split("@")[0]
+    vl = formatar_valor(pi["vl_liquido"]) if pi["vl_liquido"] else "conforme PI"
+
+    ordinal = {2: "2ª", 3: "3ª"}.get(tentativa, f"{tentativa}ª")
+    assunto = (
+        f"⚠️ [{ordinal} COBRANÇA — SEM RETORNO] PI {pi['pi']} — "
+        f"{pi['veiculo']} — {pi['cliente']}"
+    )
+
+    corpo = f"""\
+Prezado(a) {nome_contato},
+
+Entramos em contato em {data_cobranca_original} solicitando a documentação referente ao PI abaixo,
+porém ainda não recebemos retorno. Reiteramos a solicitação.
+
+────────────────────────────────────────────
+  PI:          {pi['pi']}
+  Cliente:     {pi['cliente']}
+  Campanha:    {pi['titulo']}
+  Veiculação:  {pi['ini_pub']} a {pi['fim_pub']}
+  Veículo:     {pi['veiculo']}
+  Valor Líq.:  {vl}
+  Dias em aberto: {pi['dias_atraso']} dia(s)
+────────────────────────────────────────────
+
+Para regularizarmos o pagamento, aguardamos os seguintes documentos:
+
+{docs_str}
+
+Por favor, envie os documentos para faturamento@buenocomunicacaodf.com.br
+respondendo este e-mail ou o e-mail anterior.
+
+Caso já tenha enviado, desconsidere esta mensagem.
+
+{ASSINATURA}"""
+
+    return {
+        "to":      contato["email"],
+        "cc":      contato.get("cc", []),
+        "assunto": assunto,
+        "corpo":   corpo,
+        "pi":      pi["pi"],
+        "veiculo": pi["veiculo"],
+    }
+
+
+def executar_recobranca(
+    dry_run: bool = False,
+    dias_uteis_prazo: int = 3,
+    username: str | None = None,
+    token_json: str | None = None,
+) -> dict:
+    """
+    Verifica o Histórico de Cobranças e cria rascunhos de follow-up para PIs que:
+      1. Tiveram cobrança registrada há >= `dias_uteis_prazo` dias úteis
+      2. Ainda não têm NF recebida (coluna R do Controle de PIs vazia)
+      3. O veículo não respondeu ao e-mail anterior no Gmail
+      4. Ainda não receberam recobrança nesta rodada
+
+    Retorna dict com: recobrados, pulados, sem_contato, erros
+    """
+    hoje = datetime.date.today()
+    resultado = {"recobrados": [], "pulados": [], "sem_contato": [], "erros": []}
+
+    sheets, gmail = autenticar(username=username, token_json=token_json)
+
+    # Ler dados necessários
+    rows_historico = ler_aba(sheets, f"'{ABA_HISTORICO}'")
+    rows_pis       = ler_aba(sheets, f"'{ABA_PIS}'")
+    rows_contatos  = ler_aba(sheets, f"'{ABA_CONTATOS}'")
+    contatos       = carregar_contatos(rows_contatos)
+
+    # Construir índice de PIs que já têm NF recebida
+    pis_com_nf: set[str] = set()
+    for row in rows_pis[1:]:
+        if get_cell(row, C_NF):
+            pis_com_nf.add(get_cell(row, C_PI))
+
+    # Construir índice: PI → tentativas já registradas no histórico
+    # { num_pi: {"max_tentativa": int, "data_ultima_cob": date, "email_destino": str, ...} }
+    historico_por_pi: dict[str, dict] = {}
+    for row in rows_historico[1:]:
+        num_pi   = get_cell(row, CH_PI)
+        status   = get_cell(row, CH_STATUS)
+        data_str = get_cell(row, CH_DATA_COB)
+        email_d  = get_cell(row, CH_EMAIL)
+        tent_str = get_cell(row, CH_TENTATIVA)  # ex: "1ª Cobrança"
+
+        if not num_pi or status in ("SEM_CONTATO",):
+            continue
+
+        # Extrair número da tentativa
+        tent_num = 1
+        try:
+            tent_num = int("".join(c for c in tent_str if c.isdigit()) or "1")
+        except Exception:
+            pass
+
+        data_cob = parse_data(data_str)
+        if not data_cob:
+            continue
+
+        if num_pi not in historico_por_pi or tent_num > historico_por_pi[num_pi]["max_tentativa"]:
+            historico_por_pi[num_pi] = {
+                "max_tentativa":   tent_num,
+                "data_ultima_cob": data_cob,
+                "data_str":        data_str,
+                "email_destino":   email_d,
+                "veiculo":         get_cell(row, CH_VEICULO),
+                "cliente":         get_cell(row, CH_CLIENTE),
+                "campanha":        get_cell(row, CH_CAMPANHA),
+                "fim_pub":         get_cell(row, CH_FIM_PUB),
+                "vl_liq":          get_cell(row, CH_VL_LIQ),
+            }
+
+    # Verificar cada PI com histórico
+    for num_pi, info in historico_por_pi.items():
+        veiculo     = info["veiculo"]
+        email_dest  = info["email_destino"]
+        data_ult    = info["data_ultima_cob"]
+        tentativa   = info["max_tentativa"]
+        du_passados = dias_uteis_desde(data_ult)
+
+        # 1. NF já chegou?
+        if num_pi in pis_com_nf:
+            resultado["pulados"].append({"pi": num_pi, "veiculo": veiculo, "motivo": "NF já recebida"})
+            continue
+
+        # 2. Prazo de dias úteis atingido?
+        if du_passados < dias_uteis_prazo:
+            resultado["pulados"].append({
+                "pi": num_pi, "veiculo": veiculo,
+                "motivo": f"Aguardando prazo ({du_passados}/{dias_uteis_prazo} dias úteis)"
+            })
+            continue
+
+        # 3. Veículo já respondeu?
+        if email_dest and ja_respondeu_no_gmail(gmail, num_pi, email_dest):
+            resultado["pulados"].append({"pi": num_pi, "veiculo": veiculo, "motivo": "Veículo respondeu no Gmail"})
+            continue
+
+        # 4. Localizar contato
+        contato = buscar_contato(contatos, veiculo)
+        if not contato or not contato.get("email"):
+            resultado["sem_contato"].append({"pi": num_pi, "veiculo": veiculo})
+            continue
+
+        nova_tentativa = tentativa + 1
+
+        # Reconstruir dict pi para o email
+        pi_dict = {
+            "pi":         num_pi,
+            "veiculo":    veiculo,
+            "cliente":    info["cliente"],
+            "titulo":     info["campanha"],
+            "ini_pub":    "",
+            "fim_pub":    info["fim_pub"],
+            "vl_liquido": info["vl_liq"].replace("R$ ", "").replace(".", "").replace(",", "."),
+            "dias_atraso": (hoje - (parse_data(info["fim_pub"]) or hoje)).days,
+        }
+
+        email_dict = montar_email_recobranca(pi_dict, contato, nova_tentativa, info["data_str"])
+
+        if dry_run:
+            resultado["recobrados"].append({
+                "pi": num_pi, "veiculo": veiculo,
+                "tentativa": nova_tentativa, "draft_id": "dry-run",
+                "to": email_dict["to"],
+            })
+            continue
+
+        try:
+            draft_id = criar_rascunho_gmail(gmail, email_dict)
+            registrar_historico(sheets, pi_dict, email_dict, draft_id, "RECOBRANÇA_CRIADA", nova_tentativa)
+            resultado["recobrados"].append({
+                "pi": num_pi, "veiculo": veiculo,
+                "tentativa": nova_tentativa, "draft_id": draft_id,
+                "to": email_dict["to"],
+            })
+        except Exception as e:
+            logging.error(f"Erro ao criar recobrança PI {num_pi}: {e}")
+            resultado["erros"].append({"pi": num_pi, "erro": str(e)})
+
+    return resultado
 
 
 # ══════════════════════════════════════════════════════════════════════════════
