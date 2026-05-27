@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 cobranca_pis.py — Automação de Cobrança de NFs para Veículos
 =============================================================

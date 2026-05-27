@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Registro de auditorias em Google Sheets e rascunhos de e-mail de correção para veículos.
 """
