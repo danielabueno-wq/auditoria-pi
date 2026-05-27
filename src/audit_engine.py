@@ -114,25 +114,66 @@ Sua tarefa é dupla — faça as duas coisas em uma única resposta:
 
 PARTE A — Extraia os campos do processo:
 - Extraia todos os campos estruturados do processo (incluindo o comprovante de veiculação).
-- O "comprovante de veiculação", o "relatório de checagem" e o documento chamado
-  "Comerciais Exibidos" (emitido pela emissora) são todos a MESMA coisa. Sempre que
-  encontrar qualquer um desses documentos, trate-o como o comprovante de veiculação.
-- O documento "Comerciais Exibidos" tem a seguinte estrutura:
+
+COMPROVANTE DE VEICULAÇÃO — pode aparecer com qualquer um destes nomes:
+  "Comerciais Exibidos", "Comprovante de Exibição", "Relatório de Checagem",
+  "Comprovante de Veiculação", "Irradiação". Trate todos como o mesmo documento.
+
+Existem dois formatos principais de comprovante:
+
+  FORMATO A — "Comerciais Exibidos" (tabela linha a linha):
     - Cabeçalho: nome da emissora, CNPJ
-    - Campos de identificação: Anunciante, Agência, Cidade, Nº PI, Praça de Exibição,
-      Autorização, Produto/Campanha, Período (data início à data fim)
-    - Tabela de inserções com colunas: Dia | Hora | Título | Tipo | Programa | Dur.
-      onde "Dia" é o dia do mês, "Hora" é o horário exato no formato HH:MM:SS,
-      "Programa" é o nome do programa, "Dur." é a duração em segundos.
-    - Rodapé: "Total Inserções" ou "Total de Inserções" com o número total.
-    - Página final: assinatura do responsável da emissora.
-- Para cada linha da tabela, extraia: data completa (Dia + mês/ano do cabeçalho),
-  horário exato (coluna Hora, ex: "07:58:33"), programa (coluna Programa) e quantidade (1 por linha).
-- O total de inserções está no campo "Total Inserções" ou "Total de Inserções" no rodapé.
+    - Campos: Anunciante, Agência, Nº PI, Produto/Campanha, Período
+    - Tabela: Dia | Hora | Título | Tipo | Programa | Dur. (1 inserção por linha)
+    - Rodapé: "Total Inserções" ou "Total de Inserções"
+    - Extraia: data completa, horário exato (HH:MM:SS), programa, 1 inserção por linha
+
+  FORMATO B — "Comprovante de Exibição" (múltiplos horários por linha):
+    - Cabeçalho: dados completos da emissora (razão social, CNPJ, endereço)
+    - Seção Cliente: razão social, CNPJ
+    - Seção Agência + campos PI, Campanha, Período, Tipo, Nº Contrato
+    - Tabela: cada linha tem DATA | DIA_SEMANA | HORÁRIO_1 HORÁRIO_2 ... | QTDE
+      onde cada horário na linha representa UMA inserção individual
+    - O número ao final da linha indica a quantidade de inserções naquele dia
+    - Total de inserções consta no campo "Total" ao final
+    - Extraia cada horário como uma inserção separada com a data da respectiva linha
+
+IDENTIFICAÇÃO/CARIMBO no comprovante — aceite como válido qualquer uma destas formas:
+  - Carimbo físico com dados da emissora
+  - Bloco de identificação tipado com: nome, CPF/RG, cargo/departamento + dados da empresa (CNPJ, endereço)
+  - Assinatura digital via gov.br (considere "possui_assinatura = true" e "possui_carimbo = true")
+  - NÃO exija número do PI no carimbo — isso não é obrigatório
+
+DECLARAÇÃO ART. 299 — campos obrigatórios para considerar Conforme:
+  - Número do PI ✓
+  - Nome do cliente (destinatário da declaração) ✓
+  - Nome do veículo/emissora ✓
+  - Período de veiculação ✓
+  - Nome da campanha: NÃO obrigatório — sua ausência não gera não-conformidade
+  - Quantidade de inserções: NÃO consta neste documento — não sinalize como ausente/não conforme
+  - Assinatura: nome, CPF/RG, cargo + assinatura digital gov.br = Conforme
+
+NOTA FISCAL — atenção especial à seção "Informações Complementares":
+  - Os dados mais importantes geralmente estão no bloco "Informações Complementares"
+    ao final da NF, em texto livre. Leia este bloco com atenção.
+  - Número do PI: procure "PI nº", "PI:", "conforme PI" no corpo ou informações complementares
+  - Nome da campanha: procure "Campanha:" nas informações complementares
+  - Dados bancários: procure "Dados Bancários:" nas informações complementares —
+    pode conter banco, agência, conta corrente e/ou PIX com CNPJ
+  - Desconto padrão: procure "Desconto-Padrão", "Desconto Padrão" ou "remuneração da agência"
+    nas informações complementares — o valor pode estar por extenso
+  - Não sinalize como ausente se o campo estiver nas informações complementares
+
+IDENTIFICAÇÃO DA NOTA FISCAL — o documento NF pode ter qualquer nome de arquivo.
+  Reconheça-o pelo conteúdo: "NOTA FISCAL", "NOTA FISCAL FATURA", "NFCOM", "NFCOM62",
+  "DOCUMENTO AUXILIAR DA NOTA FISCAL". Se encontrar esse documento, leia-o completo,
+  incluindo a seção "INFORMAÇÕES COMPLEMENTARES" ou "DADOS ADICIONAIS" ao final.
+  Só reporte "NF não anexada" se realmente não houver nenhum documento com essas
+  características entre os arquivos do processo.
+
 - Identifique se o veículo é da Rede Gazeta (Rádio Litoral FM, Rádio Gazeta AM/FM,
   ou se o e-mail/domínio do signatário contém "redegazeta.com.br").
-- Para a NF: verifique se constam número do PI, nome do cliente, nome da campanha e desconto padrão.
-- Para assinatura/carimbo: analise visualmente — a assinatura costuma aparecer na última página.
+- Para assinatura/carimbo: veja as regras acima — assinatura digital gov.br é válida.
 
 PARTE B — Compare com o PI e gere o laudo. Aplique as regras:
 
